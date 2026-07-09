@@ -1,0 +1,45 @@
+# ============================================
+# comsol-optic-mcp .gitignore
+# 把所有编译产物、运行时临时、虚拟环境、机器特定 prefs 排除掉
+# ============================================
+
+# Java 编译产物
+classes/*.class
+classes/UserBuild*
+classes/*.status
+classes/*.recovery
+
+# 每次 tool 调用生成的临时目录
+runtimes/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
+
+# 桥接专用 prefs 目录(整目录都跟机器安装路径/用户偏好相关,不该入仓)
+prefs/
+# 例外:README.md 如果你以后想往 prefs 加说明,可以单独开
+!prefs/README.md
+
+# COMSOL 求解结果(mph 文件,可能几百 MB,且通常跟模型相关,不该入仓)
+*.mph
+*.mphbin
+
+# COMSOL batch log(临时)
+*.log
+
+# 用户生成的 build_model 临时文件
+/tmp/_*.mph
