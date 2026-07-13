@@ -809,6 +809,47 @@ def get_reflection(
 
 
 @mcp.tool()
+def get_reflection_2d(
+    model_path: str,
+    outer: str = "",
+    outer_value: str = "",
+    dset: str = "",
+) -> dict:
+    """For 2D (or 3D) ewfd models with Floquet PERIODIC PORTS: extract R(omega)
+    / T(omega) / A(omega) from the port S-parameters:
+        R = |ewfd.S11|^2   (reflection, port 1 -> port 1)
+        T = |ewfd.S21|^2   (transmission; best-effort, undefined if no port 2,
+                            e.g. a back-mirror perfect absorber)
+        A = ewfd.Atotal    (absorbed power fraction)
+    Ports must be named "1" and "2" (COMSOL default). This is the port-S-param
+    counterpart of `get_reflection` (which is the 1D out-of-plane field-ratio
+    method via ewfd.normErel under a Scattering BC). Use THIS for 2D/3D periodic
+    unit cells and metasurfaces with periodic ports; use get_reflection for
+    1D out-of-plane Scattering-BC stacks.
+
+    `outer` (swept param name, e.g. "L") enables per-outer curves + dedup over
+    a parametric sweep; `outer_value` restricts to one curve whose outer ~= it.
+    Returns sections META, REFL, TRANS, ABS, FREQ, DIPS, CONSERVATION. DIPS
+    lists R local minima below 0.97 (resonance candidates) + the global min.
+    CONSERVATION gives R_offresonance / R_min / A_max_est (~1-R_min when T=0).
+    ~10-15s per call."""
+    props: dict[str, str] = {"model": os.path.expanduser(model_path)}
+    if outer: props["outer"] = outer
+    if outer_value: props["outer_value"] = outer_value
+    if dset: props["dset"] = dset
+    sec, _ = run_helper("EvalReflection2D", props)
+    out: dict = {}
+    for s in ("META", "REFL", "TRANS", "ABS", "FREQ", "DIPS", "CONSERVATION"):
+        rows = _rows(sec.sections.get(s, []))
+        if not rows:
+            continue
+        header = rows[0]
+        data = rows[1:]
+        out[s] = {"columns": header, "rows": data}
+    return out
+
+
+@mcp.tool()
 def dump_model(model_path: str) -> dict:
     """Detailed structural dump of a COMSOL .mph: per component — geometry features,
     physics interfaces + their features (BCs/sources/ports with selections),
