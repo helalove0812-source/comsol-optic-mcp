@@ -242,3 +242,19 @@
 - **关键技术点**:三个维度 skill 共享同一套陷阱库(principles)与工具集,差异在几何维度、BC 类型(Scattering vs Floquet port)、R 提取法(场比 vs S11)、谐振类型(轴向纵模 vs 面内 LC vs 3D 单胞模)。skill 间互相路由(1D 转 2d/3d,2D 转 3d)。
 - **状态**:`[KEPT]` 2026-07-14
 - **Lesson**:每跑通一条仿真路就立刻沉淀 skill,把"这次踩的坑+正路"固化成下次的起点——这是 hermes 三阶段里"生成"被进化机制(journal/principles/verify)天然补上的部分,阶段 3 的工厂机制要把这步自动化。
+
+## #28 — comsol-skill-factory meta 机制(类 hermes 的提议+生成)
+- **痛点**:1D/2D/3D skill 是手写的——每次跑通新仿真类要人手对照模板填一遍,易漏占位、命名撞车、frontmatter name 与目录不一致。需要一个"跑通→提议→生成草稿→人审"的半自动机制,把 hermes 三阶段里"观察"(已有 journal/principles/verify)之外的"提议+生成"补上。
+- **修复**:
+  - `skills/comsol-skill-factory/SKILL.md`:meta-skill brain——三阶段(观察复用现有进化机制→提议→生成后人审)。触发"沉淀 skill/skill 工厂/从这次复现沉淀/任务收尾+新 KEPT"。说明 `is_reusable` 判据(有 build body + 提取 + 判据三者全中才算 skill 候选;单次工具改进进 principles 不成 skill)。propose-not-autosave,人审把门。
+  - `scripts/skill_factory.py`:给定 journal 条目范围/任务目录/latest-kept,正则提取 build body 路径、提取 helper、`get_*` 工具、判据(R_min</Q≈)、principles 代号、figure、base 模型、test → 填 `templates/SKILL_TEMPLATE.md` → 写草稿到 `skills/<proposed>/`。
+  - **frontmatter name 修**:collision 解决在 fill_template **之前**(原顺序是先 fill 用预撞名再改目录,致 frontmatter name≠dir),重构后 frontmatter `name:` 与目录一致(已验证:撞名时生成 `comsol-1d-ewfd-draft`,frontmatter name 与 dir 匹配)。
+  - 软链消息修:去掉"已经由 factory 完成"误导,改为"人审后跑 install.sh 软链"(factory 不自动 install)。
+  - `.skill_factory_state.json` 进 `.gitignore`(机器本地跑时状态)。
+- **验证(07-14)**:
+  - `--dry-run --latest-kept 12`:#24-27 簇提议 `comsol-2d-ewfd-draft`(撞名自动 -draft),摘要正确。
+  - 默认扫:跳过已沉淀的 #1-8/#24-26,只看未沉淀 KEPT。
+  - 真跑:写 `comsol-1d-ewfd-draft`(从 #27 skill 沉淀条目误判为可复用——false positive,人审删;这正是 propose-not-autosave 的价值)。
+- **关键技术点**:factory 只补提议+生成,不重造观察(journal/principles/verify 已是观察机制)。`is_reusable` 三标志判据过滤掉纯工具改进。撞名 -draft 防覆盖手写 skill。false positive(#27)证明人审门必要。
+- **状态**:`[KEPT]` 2026-07-14
+- **Lesson**:skill 工厂的提取是机械的(只抓路径不写方法叙事),生成的草稿是半成品——模板占位 + 描述句要人填精。自动化止于"提议+写草稿",激活与精修留人审。propose-not-autosave 是防垃圾 skill 的闸。

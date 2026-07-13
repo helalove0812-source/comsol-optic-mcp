@@ -43,3 +43,6 @@ prefs/
 
 # 本次 2D PA 跑出的求解模型/图/数据(scratch, 不入仓)
 runs/
+
+# skill_factory 运行时状态(记录哪些 journal 条目已沉淀,机器本地,不入仓)
+.skill_factory_state.json
