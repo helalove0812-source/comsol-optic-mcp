@@ -1,0 +1,25 @@
+id	date	phase	status	component	summary
+1	2026-07-10	1	KEPT	BridgeUtil/java	tryStmt 不吞错 + compile_diagnostics 行号
+2	2026-07-10	1	KEPT	MaterialInfo.java	暴露 propertyGroup identifier
+3	2026-07-10	1	KEPT	ParamSweep.java	param_sweep 一键扫描(parametric 模式)
+4	2026-07-10	1	KEPT	RunStudy.java	run_study 返回 solve_ms/exit_code(dofs 仍 PENDING)
+5	2026-07-10	1	KEPT	Inspect/params_units	参数单位推断(wavenumber 入参仍 PENDING)
+6	2026-07-10	1	PENDING-verify	BridgeUtil.java	clearSelection 助手未真实场景验证
+7	2026-07-10	1	KEPT	server.py	compile_diagnostics 行号+snippet
+8	2026-07-10	1	KEPT	Inspect.java	file_info(size/mtime/has_sol)
+9	2026-07-11	2	KEPT	ParamSweep.java	iterate 模式解决 Invalid_property_value 二次复撞
+10	2026-07-11	2	KEPT	BridgeUtil.java	auditMesh + meshSelect 静默空选检测(维度列仍 PENDING)
+11	2026-07-13	3	KEPT	add_dispersion_material	DispMaterial 翻转 i 项符号 + passive_check SANITY 自检(回归 tests/#11 绿)
+12	-	3	PENDING	RunStudy.java	dofs 真从 model.sol(tag).dofInfo() 读
+13	-	3	PENDING	run_study	JVM 缓存(5-10s/次)
+14	-	3	PENDING	run_study	接 wavenumber range 字符串自动换算
+15	-	3	PENDING	BridgeUtil.java	auditMesh 加维度列(域/边)
+16	-	3	PENDING	study_status	hasSolution()+sol().isEmpty() 准确探测
+17	-	3	PENDING	ParamSweep.java	parametric 模式与 Frequency cross-link
+18	-	3	PENDING	build_model	2D 几何支持(大工作量,影响多项目)
+19	-	3	PENDING	build_model	"create(""rgX"",""RefractiveIndex"") 用法检测警告"
+20	-	3	PENDING	eval_aggregate	max 角点奇异防护/integral 选项
+21	2026-07-13	4	KEPT	tests/+verify.sh	回归门:helper 直跑绕过 MCP + 3 条 A 类复现脚本(#2/#8/#9 绿)+ B 类 manual
+22	2026-07-13	5	KEPT	ExportCutPlane.java+server.py	export_slice_3d: Slice plot feature 绕开 batch 几何封禁,出 3D 场/结构切面图
+23	2026-07-13	5	PENDING	probe_feature/server.py	probe_plot_feature: .properties() 枚举 plot/export feature 属性名(现只能探 physics)
+24	2026-07-13	5	KEPT	principles.md	C2-C4 沉淀:batch result 几何封禁/Slice 正路/.properties() 枚举属性名

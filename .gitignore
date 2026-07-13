@@ -3,11 +3,8 @@
 # 把所有编译产物、运行时临时、虚拟环境、机器特定 prefs 排除掉
 # ============================================
 
-# Java 编译产物
-classes/*.class
-classes/UserBuild*
-classes/*.status
-classes/*.recovery
+# Java 编译产物(build.sh 输出目录,整目录忽略,含误入的 gpu_test*.java 等草稿源)
+classes/
 
 # 每次 tool 调用生成的临时目录
 runtimes/
