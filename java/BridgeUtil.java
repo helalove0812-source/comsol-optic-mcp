@@ -124,4 +124,76 @@ public class BridgeUtil {
   static void ensureClearSelection(com.comsol.model.Model model, String tag) {
     clearSelection(model, tag);
   }
+
+  // ---------------------------------------------------------------------
+  // MCP optimization (2026-07-11): mesh-selection helpers + audit.
+  // The recurring silent bug: a mesh feature's selection MUST be resolved to
+  // a geometry+dim before .set(int[]), i.e.
+  //   feat.selection().geom("geom1", 2).set(new int[]{5})
+  // Calling feat.selection().set(int[]) WITHOUT .geom(geom,dim) silently
+  // yields an EMPTY selection — the feature then applies to nothing, with NO
+  // error at solve time, and the mesh just isn't refined. meshSelect() bakes
+  // in the correct call; auditMesh() reports per-feature entity counts so an
+  // empty selection becomes visible data instead of a silent skip.
+  // ---------------------------------------------------------------------
+
+  /** Apply an entity selection to a mesh feature, the CORRECT way (resolve
+   *  geometry+dim before .set(int[])). Use this instead of hand-writing
+   *  `feat.selection().set(...)` to avoid the silent-empty-selection bug.
+   *
+   *  Example (Size feature on domain 5 of a 2D geom):
+   *    BridgeUtil.meshSelect(model, "comp1", "mesh1", "szLiq", "geom1", 2, new int[]{5});
+   *  is equivalent to (and safer than):
+   *    model.component("comp1").mesh("mesh1").feature("szLiq")
+   *         .selection().geom("geom1", 2).set(new int[]{5});
+   */
+  static void meshSelect(com.comsol.model.Model model, String compTag,
+      String meshTag, String featTag, String geomTag, int dim, int[] entities) {
+    model.component(compTag).mesh(meshTag).feature(featTag)
+         .selection().geom(geomTag, dim).set(entities);
+  }
+
+  /** Emit a <<<MESH_AUDIT>>> section listing every mesh feature with the
+   *  number of selected entities (n). A feature the user intended to scope
+   *  to specific domains but which shows n=0 is the signature of a silent
+   *  empty selection (e.g. .geom(geom,dim).set(int[]) where the entity ids
+   *  don't exist in the current geometry, or the wrong dim). n=-1 means the
+   *  probe threw (the feature has no entity selection, e.g. some Map/global
+   *  Size features) — not necessarily a bug.
+   *
+   *  Read path: feat.selection().entities() returns the feature's BOUND
+   *  selection. Do NOT call .geom(geomTag,dim) first — that REBINDS to a
+   *  fresh empty selection (it is a setter, not a getter) and would always
+   *  report 0. Never throws; a failed audit prints one [WARN] line so the
+   *  build still completes and saves. */
+  static void auditMesh(com.comsol.model.Model model) {
+    try {
+      section("MESH_AUDIT");
+      System.out.println("comp\tmesh\tfeat\ttype\tn");
+      for (String c : model.component().tags()) {
+        var comp = model.component(c);
+        String[] meshTags;
+        try { meshTags = comp.mesh().tags(); } catch (Throwable t) { meshTags = new String[0]; }
+        for (String mt : meshTags) {
+          String[] feats;
+          try { feats = comp.mesh(mt).feature().tags(); } catch (Throwable t) { feats = new String[0]; }
+          for (String ft : feats) {
+            String ty = "?";
+            int n = -1;
+            try {
+              var feat = comp.mesh(mt).feature(ft);   // MeshFeature
+              try { ty = feat.getType(); } catch (Throwable t) { ty = "?"; }
+              // read the feature's bound selection — entities() with no .geom()
+              try { n = feat.selection().entities().length; } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+              ty = "err:" + t.getClass().getSimpleName();
+            }
+            System.out.println(c + "\t" + mt + "\t" + ft + "\t" + ty + "\t" + n);
+          }
+        }
+      }
+    } catch (Throwable t) {
+      System.out.println("[WARN] auditMesh failed: " + t.getMessage());
+    }
+  }
 }

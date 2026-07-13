@@ -69,8 +69,26 @@ public class EvalAggregate {
     if (dsetTag == null || dsetTag.isEmpty()) { BridgeUtil.fail("no dataset found"); return null; }
     var dset = model.result().dataset(dsetTag);
 
-    // 2. determine aggregate feature type + geom level (1D out-of-plane => geomLevel 2)
-    int dim = 2; // 1D out-of-plane ewfd: domains live in a 2D cross-section view
+    // 2. determine aggregate feature type + geom level.
+    // Geometry dimension is read from the model via getSDim(): a 2D geom
+    // (including the "1D out-of-plane" stack, which is actually built from 2D
+    // Rectangles) yields dim=2; a 3D geom yields dim=3. Aggregate features are
+    // picked to match the entity dimension: IntSurface/MaxSurface for 2D
+    // domains, IntVolume/MaxVolume for 3D. geomLevel follows (domains=dim,
+    // boundaries=dim-1), so this is correct for true 2D, 1D-out-of-plane,
+    // and 3D alike.
+    int dim = 2; // safe default: correct for true 2D and 1D-out-of-plane (2D entities)
+    String geomTag = "geom1";
+    try {
+      int maxSdim = 0;
+      for (String c : model.component().tags()) {
+        for (String g : model.component(c).geom().tags()) {
+          int sd = model.component(c).geom(g).getSDim();
+          if (sd > maxSdim) { maxSdim = sd; geomTag = g; }
+        }
+      }
+      if (maxSdim > 0) dim = maxSdim;
+    } catch (Throwable e) { /* keep dim=2, geom1 */ }
     int geomLevel;
     int[] entIds;
     if (boundaries.length > 0) { geomLevel = Math.max(dim - 1, 1); entIds = boundaries; }
@@ -79,11 +97,19 @@ public class EvalAggregate {
 
     String ftype;
     boolean needsDenom = false;
-    if ("max".equals(aggregate))        ftype = "MaxSurface";
-    else if ("min".equals(aggregate))   ftype = "MinSurface";
-    else if ("avg".equals(aggregate))   { ftype = "IntSurface"; needsDenom = true; }
-    else if ("integral".equals(aggregate)) ftype = "IntSurface";
-    else { BridgeUtil.fail("unknown aggregate: " + aggregate); return null; }
+    if (dim >= 3) {
+      if ("max".equals(aggregate))          ftype = "MaxVolume";
+      else if ("min".equals(aggregate))      ftype = "MinVolume";
+      else if ("avg".equals(aggregate))      { ftype = "IntVolume"; needsDenom = true; }
+      else if ("integral".equals(aggregate)) ftype = "IntVolume";
+      else { BridgeUtil.fail("unknown aggregate: " + aggregate); return null; }
+    } else {
+      if ("max".equals(aggregate))          ftype = "MaxSurface";
+      else if ("min".equals(aggregate))      ftype = "MinSurface";
+      else if ("avg".equals(aggregate))      { ftype = "IntSurface"; needsDenom = true; }
+      else if ("integral".equals(aggregate)) ftype = "IntSurface";
+      else { BridgeUtil.fail("unknown aggregate: " + aggregate); return null; }
+    }
 
     // 3. enumerate solution tags on the dataset (the outer selector)
     List<String> solTags = new ArrayList<>();
@@ -97,7 +123,7 @@ public class EvalAggregate {
 
     BridgeUtil.section("META");
     System.out.println("dataset\t" + dsetTag + "\t" + model.result().dataset(dsetTag).label());
-    System.out.println("aggregate\t" + aggregate + "\tftype\t" + ftype + "\tgeomLevel\t" + geomLevel);
+    System.out.println("aggregate\t" + aggregate + "\tftype\t" + ftype + "\tgeomLevel\t" + geomLevel + "\tdim\t" + dim + "\tgeom\t" + geomTag);
     System.out.println("nsoltags\t" + solTags.size());
     System.out.println("expr\t" + expr + "\touter\t" + (outer.isEmpty() ? "(none)" : outer));
 
@@ -113,7 +139,7 @@ public class EvalAggregate {
       if (!solTag.isEmpty()) {
         try { dset.set("solution", solTag); } catch (Throwable ignored) {}
       }
-      double[] vals = runAggregate(model, dsetTag, ftype, expr, unit, geomLevel, entIds, needsDenom);
+      double[] vals = runAggregate(model, dsetTag, ftype, expr, unit, geomLevel, entIds, needsDenom, geomTag);
       double[] freqs = runGlobal(model, dsetTag, "freq", "Hz");
       double outerVal = hasOuter ? runGlobalFirst(model, dsetTag, outer) : Double.NaN;
       String outerKey = hasOuter ? fmtKey(outerVal) : solTag;
@@ -142,12 +168,12 @@ public class EvalAggregate {
   }
 
   private static double[] runAggregate(Model m, String dsetTag, String ftype, String expr,
-      String unit, int geomLevel, int[] entIds, boolean needsDenom) throws Exception {
+      String unit, int geomLevel, int[] entIds, boolean needsDenom, String geomTag) throws Exception {
     String tag = "agg_" + System.currentTimeMillis();
     try { m.result().numerical().remove(tag); } catch (Throwable ignored) {}
     NumericalFeature nf = m.result().numerical().create(tag, ftype);
     if (entIds.length > 0) {
-      nf.selection().geom("geom1", geomLevel);
+      nf.selection().geom(geomTag, geomLevel);
       nf.selection().set(entIds);
     }
     if ("IntSurface".equals(ftype)) {

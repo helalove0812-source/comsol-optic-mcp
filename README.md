@@ -40,9 +40,14 @@ Claude:  [calls mcp__comsol__param_sweep(study="std1", param_name="tAu",
 
 ## Features
 
-- **14 tools** covering inspect / run_study / build_model / extract results
-  / probe features / set params / parametric sweep / reflection / structural
-  dump.
+- **15 tools** covering inspect / run_study / build_model / extract results
+  / probe features / set params / parametric sweep / reflection / dispersive
+  materials / structural dump.
+- **Geometry-dim-aware aggregation** — `eval_aggregate` reads the geometry
+  dimension (`getSDim`) and picks `IntSurface/MaxSurface` (2D entities, incl.
+  the "1D out-of-plane" stack which is built from 2D Rectangles) or
+  `IntVolume/MaxVolume` (3D), with matching `geomLevel`. Works for 2D,
+  1D-out-of-plane, and 3D ewfd.
 - **Sweep-aware evaluation** — `eval_aggregate` correctly resolves
   `Parametric` sweeps into one curve per distinct swept value (the
   classic "two identical L curves" bug is fixed).
@@ -143,6 +148,7 @@ Ask Claude:
 | `eval_aggregate(path, expr, domains, aggregate)` | Sweep-aware max/min/avg/integral; one curve per distinct swept value | ~10-15s |
 | `get_reflection(path, ...)` | 1D out-of-plane ewfd: R(ω) + ∫\|E\|² over Si/Liquid/CaF₂/all | ~5-10s |
 | `dump_model(path)` | Per-component geometry/physics/materials/mesh + study sweeps | ~6-10s |
+| `export_image(path, output_path, solnum, expr, ...)` | **Native 2D image export** (Surface plot of `expr` at solution `solnum` → PNG). Zoom + z-stretch via `xmin..ymax` + `viewscaletype="manual"` + `xscale/yscale`; structure coloring via `expr="dom"`. Runs `-3drend sw` (see [Native image export](#native-image-export-zoom--z-stretch)). | ~30s |
 | `probe_feature(type, props, kind, dim)` | Discover valid property names for a geometry feature or physics interface | ~6s |
 | `physics_feature(path, physics, action, ...)` | Raw pass-through to set any feature property | ~8s |
 | `set_param(path, params, output)` | Light-weight param edit + save (no re-solve) | ~8s |
@@ -154,6 +160,116 @@ Ask Claude:
 |---|---|
 | `material_info(path, material="")` | Discover propertyGroup identifiers (solves the "rg1 vs rfi" footgun). Returns `(groupname, identifier, properties)` for each material. |
 | `param_sweep(path, study, param_name, values, output_path)` | One-shot Parametric sweep; returns per-value wall-time + saved swept model. Avoids the cryptic "Parameter names not consistent" error. |
+| `add_dispersion_material(path, tag, domains, kind, epsinf, lorentz, drude, output)` | Add a dispersive ε(ω) material (Lorentz/Drude) by writing analytic `n(ω)=real√ε`, `k(ω)=imag√ε` into a RefractiveIndex group. Reusable for phonon/plasmon media. |
+
+## Recipes: 2D models & dispersive materials
+
+The bridge is **not 1D-only**. `build_model`'s template wraps your Java body
+without baking in a geometry dimension — the "1D out-of-plane" flavor of the
+example models lives entirely in the user body (it builds 2D `Rectangle`s and
+selects the out-of-plane ewfd polarization). The result helpers are
+dimension-aware (`eval_aggregate` reads `getSDim`). Two recipes that come up
+for phonon-polariton / plasmonic devices:
+
+### 2D ewfd (e.g. a y-z cross-section with out-of-plane E_x)
+
+A fresh model needs a component created before geometry/physics:
+
+```java
+model.component().create("comp1", true);            // fresh model has no comp1
+var g = model.component("comp1").geom().create("geom1", 2);
+// build 2D rectangles in the y-z plane, Boolean Difference for slots, etc.
+g.run();
+model.physics().create("ewfd", "ElectromagneticWavesFrequencyDomain", "geom1");
+```
+
+To pick the **out-of-plane** electric field (scalar `E_x`, ∂/∂x = 0 — the 2D
+analog of the 1D out-of-plane model), probe the ewfd *interface* (not a
+feature) for its polarization switch:
+
+```
+physics_feature(model, "ewfd", action="list", target="interface")
+```
+
+then set that property on the interface. Floquet Periodic Ports on the
+top/bottom boundaries give `ewfd.S21` (transmission) / `ewfd.S11` (reflection);
+read them with `get_result`.
+
+### Dispersive ε(ω) materials (Lorentz / Drude)
+
+COMSOL 6.4 ships `Dispersion`/`Lorentz`/`DrudeLorentz` propertyGroup types, but
+their oscillator schema (`omegaLOrntz_k`, …) is **not discoverable**:
+`MaterialModel.set(name, val)` is permissive and stores any name (verified:
+bogus `ZZBOGUS_PROP_zzz` is accepted and listed by `properties()`), and the
+schema is not in the jar byte-code as plain literals. Instead, `add_dispersion_material`
+writes the closed-form complex permittivity into a `RefractiveIndex` group
+(`n`/`ki` setters are proven — the FP cavity's Cr/SiO₂ use them):
+
+```
+ε(ω) = ε∞ + Σ_k S_k·ω_TO,k² / (ω_TO,k² − ω² − iωγ_k)            [Lorentz]
+       − ω_p² / (ω² + iωγ_D)                                    [Drude]
+n = real(√ε),  k = imag(√ε)        (Im ε > 0 ⇒ k > 0 = absorption)
+```
+
+with `ω = 2π·freq` (`freq` = the ewfd sweep variable, Hz). Oscillator
+frequencies/dampings are **cyclic** frequencies in Hz (write `1[THz]`);
+`ε∞` and `S_k` are dimensionless. In a frequency-domain sweep every freq is
+solved independently, so a steady-state analytic ε(ω) is physically exact — no
+auxiliary-DOF memory terms needed.
+
+```
+add_dispersion_material(
+  model_path = ".../model.mph", tag = "matPvk", domains = [3],
+  kind = "lorentz", epsinf = "5.5",
+  lorentz = "1[THz],12,0.05[THz];1.9[THz],8,0.1[THz]",
+  output = ".../model_with_mat.mph")
+```
+
+Oscillator params are registered on `model.param()` prefixed `<tag>_`
+(`matPvk_fTO1`, `matPvk_S1`, …) so they are sweepable; verify with
+`material_info`. A metal is `kind="drude", epsinf="1", drude="2000[THz],20[THz]"`;
+a metal with interband Lorentz oscillators is `kind="lorentz+drude"`.
+
+### Native image export (zoom + z-stretch)
+
+`export_image` renders a 2D Surface plot of `expr` at solution index `solnum`
+and saves a PNG. It always runs `comsol batch -3drend sw` (software rasterizer):
+the default `-3drend ogl` pipeline **native-crashes at "Evaluating 26%"** in
+headless batch mode, regardless of GL backend (xvfb/Mesa *and* real NVIDIA GLX
+fail identically — the GL backend is not the variable; the ogl render pipeline
+in batch mode is). `sw` needs no GL and produces a real PNG. Decorations
+(axes/colorbar/title/grid) are forced on. Raster only (bmp/jpeg/png/tiff/gif) —
+COMSOL batch has no vector/EPS exporter; for vectors use the GUI.
+
+Two capabilities work *together* via a View2D, and the key gotcha is
+`viewscaletype` **must be `"manual"`** — `"none"` is silently overridden by
+`autocontext=autofit`, so axis limits have no effect. Under `"manual"`, limits
+are respected with ~10% auto-padding:
+
+- **Zoom to a window**: `xmin/xmax/ymin/ymax` + `viewscaletype="manual"`.
+- **z-stretch** (make nm-scale thin layers visible): `viewscaletype="manual"` +
+  `yscale` (>1 stretches z). Note `yscale` is a **z/x visual ratio**, so a large
+  z range with a big `yscale` makes x auto-expand to compensate — a full
+  ~100 µm stack *cannot* be z-stretched; use a near-slot ~2 µm z-window.
+
+```python
+# Field map, full stack
+export_image(model_path, ".../E.png", solnum=10, expr="ewfd.normE")
+
+# Slot zoom + z-stretch (thin Au/MAPbI3 layers visible)
+export_image(model_path, ".../E_zoom.png", solnum=10, expr="ewfd.normE",
+             xmin="-45", xmax="45", ymin="49.6", ymax="51.1",
+             viewscaletype="manual", yscale="30")
+
+# Structure colored by domain (no field needed), z-stretched
+export_image(model_path, ".../struct.png", solnum=1, expr="dom",
+             xmin="-60", xmax="60", ymin="49", ymax="51.5",
+             viewscaletype="manual", yscale="15")
+```
+
+`looplevel` is set to `[solnum]`, so `solnum=i` → the i-th frequency in a
+frequency sweep (`f = fstart + (i-1)*fstep`; check `inspect_model` for the
+sweep params). Fixed color range: `zmin`/`zmax`; log color: `logscale=True`.
 
 ## Architecture
 

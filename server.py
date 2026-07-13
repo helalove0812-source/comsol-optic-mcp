@@ -77,10 +77,17 @@ def parse_sections(stdout: str) -> SectionedOutput:
     return out
 
 
-def run_helper(helper_name: str, props: dict[str, str]) -> tuple[SectionedOutput, str]:
+def run_helper(helper_name: str, props: dict[str, str],
+                renderer: str | None = None) -> tuple[SectionedOutput, str]:
     """Run a compiled helper class via `comsol batch` with the given input props.
 
     Returns (parsed sections, raw stdout). Raises RuntimeError on hard failure.
+
+    `renderer` selects the 3D rasterizer: pass "sw" for image-export helpers
+    (ExportImage) — the default ogl pipeline native-crashes at "Evaluating 26%"
+    in headless batch mode regardless of GL backend (xvfb/Mesa and real NVIDIA
+    GLX fail identically), so software rasterization (-3drend sw) is the only
+    working native-image path. Other helpers leave it as None (ogl, no-op).
     """
     if not shutil.which(COMSOL_BIN) and not os.path.exists(COMSOL_BIN):
         raise RuntimeError(f"comsol binary not found: {COMSOL_BIN}")
@@ -108,6 +115,12 @@ def run_helper(helper_name: str, props: dict[str, str]) -> tuple[SectionedOutput
 
     cmd = [
         COMSOL_BIN, "batch",
+    ]
+    if renderer == "sw":
+        # -3drend sw must come right after `batch`; ogl (default) native-crashes
+        # in headless batch when a plot is rendered (see docstring).
+        cmd += ["-3drend", "sw"]
+    cmd += [
         "-inputfile", class_file,
         "-tmpdir", tmpdir,
         "-recoverydir", recov,
@@ -372,6 +385,11 @@ public class {cls} {{
       throw t;
     }}
     // ---- end user body ----
+    // MCP opt (2026-07-11): audit mesh feature selections before solving/
+    // saving, so the silent empty-selection bug (calling .set(int[]) without
+    // first .geom(geomTag,dim)) becomes visible as a <<<MESH_AUDIT>>> section
+    // with per-feature entity counts. Never throws; failed audit = 1 [WARN].
+    BridgeUtil.auditMesh(model);
     String runStudy = in.getProperty("run_study");
     if (runStudy != null && !runStudy.isEmpty()) {{
       BridgeUtil.section("RUNNING");
@@ -430,8 +448,20 @@ def build_model(
     This is the same paradigm as COMSOL's 'File > Export Model to Java'. Compile
     and runtime errors are returned so the Java can be fixed and rerun.
 
-    Returns: saved path, whether a study ran + its time, and any sections the
-    body emitted."""
+    MESH-SELECTION GOTCHA (2026-07-11): a mesh feature's selection MUST be
+    resolved to a geometry+dim before .set(int[]), i.e.
+        feat.selection().geom("geom1", 2).set(new int[]{5})
+    Calling feat.selection().set(int[]) WITHOUT .geom(geom,dim) silently yields
+    an EMPTY selection — the feature applies to nothing, no error at solve
+    time, the mesh just isn't refined. Use BridgeUtil.meshSelect(model,
+    compTag, meshTag, featTag, geomTag, dim, int[]) to do it correctly. After
+    the body runs, a <<<MESH_AUDIT>>> section lists every mesh feature's domain
+    (n2) and edge (n1) entity counts — a feature that should scope to specific
+    domains but shows n2=0 is the signature of this bug (returned as
+    `mesh_audit` and surfaced in `mesh_empty_selections`).
+
+    Returns: saved path, whether a study ran + its time, mesh selection audit,
+    and any sections the body emitted."""
     save_path = os.path.expanduser(save_path)
     base = os.path.expanduser(base_model) if base_model else ""
     job = uuid.uuid4().hex[:12]
@@ -527,6 +557,20 @@ def build_model(
             exit_code = r[1]
     saved_rows = _rows(parsed.sections.get("SAVED", []))
     saved = saved_rows[0][1] if saved_rows and len(saved_rows[0]) > 1 else None
+    # MESH_AUDIT (2026-07-11): per mesh feature {comp,mesh,feat,type,n}.
+    # n = selected entity count for the feature's bound selection; -1 = probe
+    # threw (feature has no entity selection, e.g. some Map/global-Size
+    # features). A feature the user meant to scope to specific domains but
+    # which shows n=0 is the signature of the silent empty-selection bug.
+    mesh_audit = []
+    mesh_empty = []
+    for r in _rows(parsed.sections.get("MESH_AUDIT", [])):
+        if not r or r[0] == "comp" or len(r) < 5:
+            continue
+        entry = {"comp": r[0], "mesh": r[1], "feat": r[2], "type": r[3], "n": r[4]}
+        mesh_audit.append(entry)
+        if r[4] == "0":
+            mesh_empty.append(entry)
     return {
         "compiled": True,
         "saved": saved or (save_path if os.path.exists(save_path) else None),
@@ -535,6 +579,8 @@ def build_model(
         "exit_code": exit_code,
         "sections": parsed.sections,
         "java_warnings": _collect_java_warnings(parsed.sections),
+        "mesh_audit": mesh_audit,
+        "mesh_empty_selections": mesh_empty,
     }
 
 
@@ -685,7 +731,10 @@ def eval_aggregate(
     grouped and deduped by its value. `outer_value` (e.g. '0.9') restricts
     output to the single curve whose outer ~= that value. `aggregate` is one
     of max|min|avg|integral. Use domains=[] for whole-model, or boundaries=[5]
-    for a boundary aggregate. 1D out-of-plane geometry is handled (geomLevel 2).
+    for a boundary aggregate. Geometry dimension is read from the model
+    (getSDim): true 2D and the "1D out-of-plane" stack (both 2D entities) use
+    IntSurface/MaxSurface at geomLevel 2; 3D uses IntVolume/MaxVolume at
+    geomLevel 3. Works for 2D, 1D-out-of-plane, and 3D ewfd.
 
     Returns: {meta:{...}, curves: {<outer_value or soltag>: {freq_Hz:[...],
     wavenumber_cm1:[...], value:[...]}}, rows:[raw tsv rows]}.
@@ -771,6 +820,194 @@ def dump_model(model_path: str) -> dict:
     sec, _ = run_helper("Dump", props)
     # return the raw sectioned lines so the caller sees the full tree
     return {k: v for k, v in sec.sections.items()}
+
+
+@mcp.tool()
+def export_image(
+    model_path: str,
+    output_path: str,
+    solnum: int = 1,
+    expr: str = "ewfd.normE",
+    descr: str = "Electric field norm",
+    title: str = "E field",
+    data: str = "dset1",
+    width: int = 1200,
+    height: int = 800,
+    logscale: bool = False,
+    zmin: str = "",
+    zmax: str = "",
+    imagetype: str = "png",
+    exptype: str = "Image2D",
+    xmin: str = "",
+    xmax: str = "",
+    ymin: str = "",
+    ymax: str = "",
+    viewscaletype: str = "",
+    xscale: str = "",
+    yscale: str = "",
+    sellist: str = "",
+) -> dict:
+    """Render a NATIVE COMSOL 2D image (Surface plot of `expr` at solution
+    index `solnum`) and save to `output_path`. Runs `comsol batch -3drend sw`
+    (software rasterizer) — the default ogl pipeline native-crashes in headless
+    batch, so this tool always uses sw. Decorations (axes/colorbar/title/grid)
+    are forced on. ~30s per call.
+
+    Common uses:
+      - Field map:  expr='ewfd.normE' (default).
+      - Structure map colored by domain (no field needed): expr='dom'.
+
+    Zoom + z-stretch (the two work TOGETHER via a View2D; viewscaletype MUST be
+    'manual' — 'none' is silently overridden by autocontext=autofit so the limits
+    have no effect):
+      - Zoom to a window: set xmin/xmax/ymin/ymax + viewscaletype='manual'.
+        autocontext pads ~10% (e.g. request x in [-45,45] -> renders ~[-40,40]).
+      - z-stretch (make thin layers visible): set viewscaletype='manual' + yscale
+        (e.g. 15-30). NOTE yscale is a z/x VISUAL RATIO, so a large z range with
+        big yscale makes x auto-expand to compensate — a full ~100um stack cannot
+        be z-stretched; use a near-slot ~2um z-window (ymin/ymax) with yscale.
+        Recipe for a slot zoom with thin-layer visibility:
+          xmin=-45 xmax=45 ymin=49.6 ymax=51.1 viewscaletype=manual yscale=30
+        Recipe for a z-stretched structure (expr='dom'):
+          xmin=-60 xmax=60 ymin=49 ymax=51.5 viewscaletype=manual yscale=15
+
+    Other args: logscale (log color), zmin/zmax (fixed color range), imagetype
+    (bmp/jpeg/png/tiff/gif; raster only — no vector in batch), exptype
+    ('Image2D' default, or 'Image'). sellist (comma domain list) restricts the
+    Surface — currently throws 'Entity has no selection' on a fresh Surface,
+    left wired but usually unused; prefer the xmin..ymax zoom instead.
+
+    Returns {output, exists, size_bytes, view, expr, solnum}."""
+    props: dict[str, str] = {
+        "model": os.path.expanduser(model_path),
+        "png": os.path.expanduser(output_path),
+        "solnum": str(solnum),
+        "expr": expr,
+        "descr": descr,
+        "title": title,
+        "data": data,
+        "width": str(width),
+        "height": str(height),
+        "logscale": "on" if logscale else "off",
+        "imagetype": imagetype,
+        "exptype": exptype,
+    }
+    if zmin: props["zmin"] = zmin
+    if zmax: props["zmax"] = zmax
+    for k, v in (("xmin", xmin), ("xmax", xmax), ("ymin", ymin), ("ymax", ymax),
+                 ("viewscaletype", viewscaletype), ("xscale", xscale),
+                 ("yscale", yscale), ("sellist", sellist)):
+        if v:
+            props[k] = v
+    sec, _ = run_helper("ExportImage", props, renderer="sw")
+    exp = {ln.split("\t")[0]: (ln.split("\t", 1)[1] if "\t" in ln else "")
+           for ln in sec.sections.get("EXPORT", []) if "\t" in ln}
+    out = os.path.expanduser(output_path)
+    size = os.path.getsize(out) if os.path.exists(out) else -1
+    return {
+        "output": out,
+        "exists": os.path.exists(out),
+        "size_bytes": size,
+        "view": exp.get("view", ""),
+        "expr": exp.get("expr", expr),
+        "solnum": exp.get("solnum", str(solnum)),
+    }
+
+
+@mcp.tool()
+def export_slice_3d(
+    model_path: str,
+    output_path: str,
+    expr: str = "ewfd.normE",
+    descr: str = "Electric field norm",
+    title: str = "E field",
+    solnum: int = 1,
+    quickplane: str = "xy",
+    quickz: str = "0",
+    quickn: int = 1,
+    logscale: bool = False,
+    zmin: str = "",
+    zmax: str = "",
+    plotype: str = "slice",
+    view: str = "iso",
+    width: int = 1200,
+    height: int = 900,
+    solvefreqs: str = "",
+) -> dict:
+    """Render a NATIVE COMSOL 3D image by cutting a plane through the solved
+    3D solution (dset1) and save to `output_path`. This is the working path for
+    3D field/structure plots in headless batch — `export_image` (2D) cannot
+    accept a 3D dataset, and batch blocks cut-plane *dataset* creation plus all
+    plot-feature *selection* setting (Hide/Surface `.geom().set()` fail with
+    "cannot be created in this context" / "Entity has no selection"). The Slice
+    *plot feature* sidesteps both: the plane is defined inside the feature, and
+    rendering is an eval op (allowed). Runs `comsol batch -3drend sw` (software
+    rasterizer; ogl native-crashes in headless batch). ~8s per call.
+
+    Args:
+      model_path:  solved 3D .mph with a dset1 (3D solution dataset).
+      output_path: destination .png.
+      expr:        expression to color the slice, e.g. 'ewfd.normE' (field) or
+                   'dom' (domain-id structure map).
+      solnum:      1-based solution index in dset1 (e.g. for a frequency sweep,
+                   the freq of interest — read plist via inspect_model first).
+      quickplane:  slice axis — 'xy' (horizontal, constant z), 'xz', or 'yz'.
+      quickz:      coordinate of the slice along the axis perpendicular to
+                   quickplane (for 'xy' this is the z-level, in model length
+                   unit, e.g. '0.225' for 0.225 um). For 'xz' use the y-level,
+                   for 'yz' the x-level.
+      quickn:      number of slices (usually 1). NOTE the real property name is
+                   axis-specific ('quickznumber' for xy) — the helper resolves it.
+      logscale:    log color scale (recommended for field hot-spots).
+      zmin/zmax:   fixed color range (empty = auto).
+      plotype:     'slice' (default, cut plane) or 'surface' (Surface on ALL
+                   boundaries — no selection; occluded by outer box, rarely
+                   useful in 3D).
+      view:        'iso' (default, works) — custom 'top'/'side' ortho cameras
+                   render BLANK in batch; avoid.
+      solvefreqs:  optional comma list of THz to re-solve before plotting
+                   (empty = use existing dset1 solutions).
+
+    Typical recipes (MIM/patch cavity):
+      Field hot-spot at resonance:   expr='ewfd.normE' logscale=True
+                                     quickplane='xy' quickz='<spacer mid z>'
+                                     solnum=<resonance freq index>
+      Structure (L/patch footprint): expr='dom' quickz='<patch mid z>' solnum=1
+      Off-resonance control:         same as field, solnum=<off-res freq index>
+
+    Returns {output, exists, size_bytes, expr, solnum, slice_info}."""
+    props: dict[str, str] = {
+        "model": os.path.expanduser(model_path),
+        "png": os.path.expanduser(output_path),
+        "expr": expr,
+        "descr": descr,
+        "title": title,
+        "solnum": str(solnum),
+        "quickplane": quickplane,
+        "quickz": quickz,
+        "quickn": str(quickn),
+        "logscale": "on" if logscale else "off",
+        "plotype": plotype,
+        "view": view,
+        "width": str(width),
+        "height": str(height),
+    }
+    if zmin: props["zmin"] = zmin
+    if zmax: props["zmax"] = zmax
+    if solvefreqs: props["solvefreqs"] = solvefreqs
+    sec, _ = run_helper("ExportCutPlane", props, renderer="sw")
+    pre = {ln.split("\t")[0]: (ln.split("\t", 1)[1] if "\t" in ln else "")
+           for ln in sec.sections.get("PRE", []) if "\t" in ln}
+    out = os.path.expanduser(output_path)
+    size = os.path.getsize(out) if os.path.exists(out) else -1
+    return {
+        "output": out,
+        "exists": os.path.exists(out),
+        "size_bytes": size,
+        "expr": expr,
+        "solnum": str(solnum),
+        "slice_info": f"{pre.get('plotype', plotype)} plane={quickplane} level={quickz} n={quickn}",
+    }
 
 
 @mcp.tool()
@@ -1021,21 +1258,37 @@ def param_sweep(
     param_name: str,
     values: list[str],
     output_path: str = "",
+    mode: str = "auto",
 ) -> dict:
     """Run a one-shot parametric sweep over a study.
 
-    Internally creates a Parametric feature on the study with the given
-    `param_name` and `values`, runs the study (COMSOL sweeps all outer
-    values internally), and returns per-value wall-time estimates plus
-    a saved swept model (if `output_path` given).
+    `mode` = "auto" (default) | "parametric" | "iterate":
+      - **parametric**: create a Parametric feature on the study, run once;
+        COMSOL sweeps all outer values internally and keeps a multi-solution
+        dataset (so eval_aggregate `outer=` can group curves by value). Best
+        when the study has NO existing sweep feature.
+      - **iterate**: do NOT create a Parametric feature — loop the values in
+        Java (`model.param().set` + `study.run()` per value). This avoids the
+        `Invalid_property_value` error that occurs when a Parametric feature
+        is stacked on top of an existing Frequency/Parametric/Batch sweep
+        (e.g. an ewfd frequency sweep). One JVM spawn does the work of N
+        run_study calls. By default only the LAST value's solution is saved;
+        if `output_path` contains `{idx}` or `{value}`, a per-value .mph is
+        saved after each run (substitution: {idx}=0-based index, {value}=
+        sanitized expr, e.g. "6[nm]" -> "6_nm").
+      - **auto**: detect existing sweep features (type contains Freq/
+        Parametric/Batch) -> iterate, else parametric.
 
     `values` is a list of COMSOL expression strings, e.g.
     `['6[nm]', '10[nm]', '18[nm]', '25[nm]']` (the same syntax you'd pass
-    to `set_param` for that parameter). Solve time is the wall-clock
-    divided by N (rough; COMSOL doesn't expose per-outer timings).
+    to `set_param` for that parameter). In iterate mode, per-value solve_ms
+    is the REAL measured wall time; in parametric mode it's wall/N (COMSOL
+    doesn't expose per-outer timings).
 
     ~ (N × single-solve time) per call; for the FP cavity on this machine
-    that's ~5s × N."""
+    that's ~5s × N. Iterate mode is the recommended fix when param_sweep
+    fails with `Invalid_property_value` on a model that already sweeps
+    frequency."""
     if not values:
         raise RuntimeError("param_sweep: `values` is empty")
     props: dict[str, str] = {
@@ -1043,6 +1296,7 @@ def param_sweep(
         "study": study,
         "pname": param_name,
         "plistarr": ",".join(values),
+        "mode": mode,
     }
     if output_path:
         props["output"] = os.path.expanduser(output_path)
@@ -1057,6 +1311,7 @@ def param_sweep(
             plist.append({"index": r[0], "value": r[1] if len(r) > 1 else ""})
     running = _rows(sec.sections.get("RUNNING", []))
     study_used = None
+    mode_used = None
     total_ms = None
     per_value_ms = None
     for r in running:
@@ -1064,6 +1319,8 @@ def param_sweep(
             continue
         if r[0] == "study" and len(r) > 1:
             study_used = r[1]
+        elif r[0] == "mode" and len(r) > 1:
+            mode_used = r[1]
         elif r[0] == "total_ms" and len(r) > 1:
             total_ms = r[1]
         elif r[0] == "per_value_ms" and len(r) > 1:
@@ -1078,17 +1335,116 @@ def param_sweep(
             })
     saved = None
     srows = _rows(sec.sections.get("SAVED", []))
-    if srows and len(srows[0]) > 1:
-        saved = srows[0][1]
+    # iterate per-value mode emits one SAVED row per value (col0=index, col1=path);
+    # parametric / single-save emits "output\t<path>".
+    saved_list = []
+    if srows:
+        if srows[0][0] == "output" and len(srows[0]) > 1:
+            saved = srows[0][1]
+        else:
+            for r in srows:
+                if len(r) > 1:
+                    saved_list.append(r[1] if r[0].isdigit() else (r[1] if len(r) > 1 else r[0]))
+            if saved_list:
+                saved = saved_list[0]
     return {
         "param": param_meta,
         "plist": plist,
         "study": study_used,
+        "mode": mode_used,
         "total_ms": int(total_ms) if total_ms and total_ms.isdigit() else total_ms,
         "per_value_ms": int(per_value_ms) if per_value_ms and per_value_ms.isdigit() else per_value_ms,
         "per_value": per_val,
         "saved": saved,
+        "saved_list": saved_list,
     }
+
+
+# ---------------------------------------------------------------------------
+# add_dispersion_material: add a dispersive epsilon(omega) material by writing
+# analytic Lorentz / Drude expressions into a RefractiveIndex property group
+# (n = real(sqrt(eps)), ki = imag(sqrt(eps))). For frequency-domain sweeps this
+# is physically exact (each freq solved independently) and avoids the
+# undiscoverable built-in "Dispersion"/"Lorentz" propertyGroup schema (whose
+# set() is permissive). Reusable for any 2D/3D ewfd needing phonon/plasmon
+# dispersion (Kim perovskite, Au THz, polar dielectrics, ...).
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def add_dispersion_material(
+    model_path: str,
+    tag: str,
+    domains: list[int],
+    kind: str = "lorentz",
+    epsinf: str = "1",
+    lorentz: str = "",
+    drude: str = "",
+    comp: str = "comp1",
+    label: str = "",
+    output: str = "",
+) -> dict:
+    """Add a dispersive epsilon(omega) material to a model and (optionally) save.
+
+    Writes the closed-form complex permittivity into a freshly created
+    RefractiveIndex property group. COMSOL uses e^{+i w t}, so a PASSIVE
+    (lossy) material needs Im(eps) <= 0; the i-term signs below are the
+    CONJUGATE of the usual e^{-i w t} physics convention to enforce that:
+        eps(omega) = epsinf
+                   + sum_k S_k * wTO_k^2 / (wTO_k^2 - w^2 + i*w*gamma_k)   [Lorentz]
+                   - wp^2 / (w^2 - i*w*gammaD)                            [Drude]
+        n = real(sqrt(eps)),  ki = imag(sqrt(eps))   (Im(eps)<=0 => passive)
+    with w = 2*pi*freq (freq = the ewfd frequency-domain sweep variable, Hz).
+    Oscillator frequencies/dampings are CYCLIC frequencies in Hz (write them
+    with units, e.g. "1[THz]"); epsinf and S_k are dimensionless.
+
+    A <<<SANITY>>> section is emitted sampling Re/Im(eps) at the resonances
+    with a `passive_check` (Im(eps)<=0). A flipped sign (gain, Im>0 => R>1)
+    fails loud rather than being written silently (journal #11).
+
+    `kind` is "lorentz" | "drude" | "lorentz+drude".
+    `lorentz` = semicolon-separated oscillators, each "fTO,S,gamma", e.g.
+        "1[THz],12,0.05[THz];1.9[THz],8,0.1[THz]".
+    `drude` = "wp,gammaD", e.g. "2000[THz],20[THz]".
+    `domains` = the domain ids the material applies to. Oscillator params are
+    registered on model.param() (prefixed with `<tag>_`) so they are sweepable.
+    `output` saves the modified .mph; omit to apply without saving.
+
+    Returns the eps/n/ki expressions, the RefractiveIndex identifier, the
+    params created, and (if saved) the output path. ~8s per call."""
+    if not domains:
+        raise RuntimeError("add_dispersion_material: `domains` is empty")
+    props: dict[str, str] = {
+        "model": os.path.expanduser(model_path),
+        "tag": tag,
+        "kind": kind,
+        "epsinf": epsinf,
+        "domains": ",".join(str(d) for d in domains),
+    }
+    if lorentz:
+        props["lorentz"] = lorentz
+    if drude:
+        props["drude"] = drude
+    if comp:
+        props["comp"] = comp
+    if label:
+        props["label"] = label
+    if output:
+        props["output"] = os.path.expanduser(output)
+    sec, _ = run_helper("DispMaterial", props)
+    disp: dict[str, str] = {}
+    for r in _rows(sec.sections.get("DISP", [])):
+        if r and len(r) >= 2:
+            # rows are "key\tvalue" (value may itself contain tabs only for the
+            # long expressions, which are the last field)
+            disp[r[0]] = r[1] if len(r) == 2 else "\t".join(r[1:])
+    params: list[dict] = []
+    for r in _rows(sec.sections.get("PARAMS", [])):
+        if r and len(r) >= 2:
+            params.append({"name": r[0], "value": r[1]})
+    saved = None
+    srows = _rows(sec.sections.get("SAVED", []))
+    if srows and len(srows[0]) > 1:
+        saved = srows[0][1]
+    return {"disp": disp, "params": params, "saved": saved}
 
 
 if __name__ == "__main__":

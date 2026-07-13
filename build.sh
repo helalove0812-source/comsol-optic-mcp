@@ -17,7 +17,10 @@ echo "Compiling helpers -> $CLASSES"
   "$HERE/java/SetParam.java" \
   "$HERE/java/PhysicsFeature.java" \
   "$HERE/java/MaterialInfo.java" \
-  "$HERE/java/ParamSweep.java"
+  "$HERE/java/ParamSweep.java" \
+  "$HERE/java/DispMaterial.java" \
+  "$HERE/java/ExportImage.java" \
+  "$HERE/java/ExportCutPlane.java"
 # remove stray UserBuild*.java/.class left by failed build_model runs
 rm -f "$CLASSES"/UserBuild*.java "$CLASSES"/UserBuild*.class "$CLASSES"/UserBuild*.status "$CLASSES"/UserBuild*.recovery 2>/dev/null
 echo "Done. Classes:"
