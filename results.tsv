@@ -26,3 +26,4 @@ id	date	phase	status	component	summary
 25	2026-07-14	6	KEPT	EvalReflection2D.java+server.py	get_reflection_2d:2D Floquet S11/ST/Atotal 提取(Global 数值求值,批量允许);#25 回归绿
 26	2026-07-14	6	KEPT	pa2d_body.java	2D 完美吸收体复现:FP base 重用 ewfd+dup mat1(材料 proper rfi),R_min=0.089<0.2 成功判据达成;双 dip@1990/2630
 27	2026-07-14	6	KEPT	tests/#25/#26	2D 回归:#25 全流程(build+solve+提取 断言 R_min<0.5)+#26 build 快门;verify PASS=8 FAIL=0
+28	2026-07-14	7	KEPT	skills/comsol-1d-ewfd+2d-ewfd	1D/2D ewfd 沉淀成 skill(hermes 结构,7 阶段+铁律+陷阱表);install.sh 软链可发现;与 3d 并列全维度覆盖

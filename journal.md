@@ -224,3 +224,21 @@
 - **验证(07-14)**:`./verify.sh` → **PASS=8 FAIL=0 SKIP=1 MANUAL=1**(#25/#26 全 PASS,#22 仍 SKIP 待 3D 模型,#10 manual)。
 - **状态**:`[KEPT]` 2026-07-14
 - **Lesson**:慢的端到端测试(#25,~60s)锁成功判据;快的 build 门(#26,~10s)锁结构健全——两条一起,改 build_model/材料路径会被立刻抓。results.tsv 旧 PENDING "build_model 2D 几何支持"(#18)至此解决。
+
+---
+
+# Phase 7: 沉淀 comsol-1d-ewfd + comsol-2d-ewfd skill(2026-07-14)
+
+来源:计划阶段 2。阶段 1 跑通 2D PA 后,把 1D(Ahn FP)和 2D(PA)两条路沉淀成 skill,与阶段 0 的 comsol-3d-ewfd 并列,全维度覆盖。skill 源在 `.comsol-mcp/skills/`(入仓),`install.sh` 软链到 `~/.claude/skills/` 被发现。
+
+## #27 — comsol-1d-ewfd + comsol-2d-ewfd skill
+- **痛点**:只有 3d ewfd 沉淀成 skill;1D FP、2D patch 都做过但没固化,下次复现同类要从 journal/记忆里捞,新人/AI 更易重踩已修坑(材料 duplicate、mesh `.geom(2).set`、Floquet vs 场比适用边界)。
+- **修复**:
+  - `skills/comsol-1d-ewfd/SKILL.md`:7 阶段流水线(平面多层 geom → out-of-plane ewfd + **Scattering BC 场比法** → 材料 duplicate → 网格 → 频扫 iterate → `get_reflection` 场比提 R → Lorentzian 拟 Q)。素材引用 `plain_fp_body.java` + `FP_ahn_converge_body.java` + memory fp-ahn + journal #1-8。触发词覆盖 1D 多层/FP/微腔/Q 因子/场比法。
+  - `skills/comsol-2d-ewfd/SKILL.md`:7 阶段(geom2+Rectangle → out-of-plane ewfd + **Floquet 双端口周期晶胞** → 材料 duplicate mat1+重用 ewfd → 2D mesh `.geom(2).set` → 频扫 → `get_reflection_2d` S11 → R dip 判据 R_min<0.2)。素材引用 `pa2d_body.java` + `EvalReflection2D.java` + `runs/` 图 + principles F + journal #24-26。触发词覆盖 2D/完美吸收体/patch 阵列/超表面/Floquet/面内谐振。
+  - 两 skill 都按 3d skill 的 hermes 结构(铁律 + 7 阶段 + 陷阱速查表 + 工具速查 + 路由 + 默认值),**绝对路径引用素材不复制内容**。
+  - 适用边界明确写出:1D 看不到面内谐振转 2d/3d;2D patch 沿 z 无限长,真 3D 有限 patch 转 3d。
+- **验证(07-14)**:`bash skills/install.sh` → comsol-1d/2d/3d-ewfd 三 skill 全软链到 `~/.claude/skills/` 可发现(`academic` 同在)。
+- **关键技术点**:三个维度 skill 共享同一套陷阱库(principles)与工具集,差异在几何维度、BC 类型(Scattering vs Floquet port)、R 提取法(场比 vs S11)、谐振类型(轴向纵模 vs 面内 LC vs 3D 单胞模)。skill 间互相路由(1D 转 2d/3d,2D 转 3d)。
+- **状态**:`[KEPT]` 2026-07-14
+- **Lesson**:每跑通一条仿真路就立刻沉淀 skill,把"这次踩的坑+正路"固化成下次的起点——这是 hermes 三阶段里"生成"被进化机制(journal/principles/verify)天然补上的部分,阶段 3 的工厂机制要把这步自动化。
