@@ -16,10 +16,13 @@ id	date	phase	status	component	summary
 15	-	3	PENDING	BridgeUtil.java	auditMesh 加维度列(域/边)
 16	-	3	PENDING	study_status	hasSolution()+sol().isEmpty() 准确探测
 17	-	3	PENDING	ParamSweep.java	parametric 模式与 Frequency cross-link
-18	-	3	PENDING	build_model	2D 几何支持(大工作量,影响多项目)
+18	2026-07-14	3	KEPT	build_model	2D 几何支持已落地:build_model 本维度无关,补 get_reflection_2d(S11)+pa2d_body(R_min=0.089),见 journal #24-#26/principles F
 19	-	3	PENDING	build_model	"create(""rgX"",""RefractiveIndex"") 用法检测警告"
 20	-	3	PENDING	eval_aggregate	max 角点奇异防护/integral 选项
 21	2026-07-13	4	KEPT	tests/+verify.sh	回归门:helper 直跑绕过 MCP + 3 条 A 类复现脚本(#2/#8/#9 绿)+ B 类 manual
 22	2026-07-13	5	KEPT	ExportCutPlane.java+server.py	export_slice_3d: Slice plot feature 绕开 batch 几何封禁,出 3D 场/结构切面图
 23	2026-07-13	5	PENDING	probe_feature/server.py	probe_plot_feature: .properties() 枚举 plot/export feature 属性名(现只能探 physics)
 24	2026-07-13	5	KEPT	principles.md	C2-C4 沉淀:batch result 几何封禁/Slice 正路/.properties() 枚举属性名
+25	2026-07-14	6	KEPT	EvalReflection2D.java+server.py	get_reflection_2d:2D Floquet S11/ST/Atotal 提取(Global 数值求值,批量允许);#25 回归绿
+26	2026-07-14	6	KEPT	pa2d_body.java	2D 完美吸收体复现:FP base 重用 ewfd+dup mat1(材料 proper rfi),R_min=0.089<0.2 成功判据达成;双 dip@1990/2630
+27	2026-07-14	6	KEPT	tests/#25/#26	2D 回归:#25 全流程(build+solve+提取 断言 R_min<0.5)+#26 build 快门;verify PASS=8 FAIL=0

@@ -40,3 +40,6 @@ prefs/
 
 # 用户生成的 build_model 临时文件
 /tmp/_*.mph
+
+# 本次 2D PA 跑出的求解模型/图/数据(scratch, 不入仓)
+runs/
